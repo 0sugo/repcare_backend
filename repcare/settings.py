@@ -41,7 +41,9 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'accounts',
     'corsheaders',
-    'telemedicine',
+    'patients',
+    'doctors',
+    # 'telemedicine',
 ]
 
 MIDDLEWARE = [
