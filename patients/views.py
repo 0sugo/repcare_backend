@@ -20,34 +20,41 @@ class PatientViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['GET'])
     def dashboard_metrics(self, request):
         patient = self.get_queryset().first()
-        
-        # Calculate metrics
-        appointments = Appointment.objects.filter(patient=patient)
-        medications = Medication.objects.filter(patient=patient)
-        test_results = TestResult.objects.filter(patient=patient)
+        today = timezone.now().date()
         
         metrics = {
             'consultations': {
-                'total': appointments.count(),
-                'upcoming': appointments.filter(
-                    date__gte=timezone.now().date(),
-                    status='confirmed'
+                'total': Appointment.objects.filter(patient=patient).count(),
+                'upcoming': Appointment.objects.filter(
+                    patient=patient,
+                    date__gte=today,
+                    status__in=['scheduled', 'confirmed']
                 ).count(),
-                'last_visit': appointments.filter(
+                'last_visit': Appointment.objects.filter(
+                    patient=patient,
                     status='completed'
-                ).order_by('-date').first().date if appointments.exists() else None
+                ).order_by('-date').values_list('date', flat=True).first()
             },
             'medications': {
-                'active': medications.filter(
-                    end_date__gte=timezone.now().date()
+                'active': Medication.objects.filter(
+                    patient=patient,
+                    end_date__gte=today,
+                    is_active=True
                 ).count(),
-                'adherence': medications.aggregate(
-                    avg_adherence=models.Avg('adherence_rate')
-                )['avg_adherence']
+                'adherence': Medication.objects.filter(
+                    patient=patient,
+                    is_active=True
+                ).aggregate(avg_adherence=models.Avg('adherence_rate'))['avg_adherence'] or 0
             },
             'test_results': {
-                'pending': test_results.filter(status='pending').count(),
-                'available': test_results.filter(status='available').count()
+                'pending': TestResult.objects.filter(
+                    patient=patient,
+                    status='pending'
+                ).count(),
+                'available': TestResult.objects.filter(
+                    patient=patient,
+                    status='available'
+                ).count()
             }
         }
         return Response(metrics)
@@ -60,13 +67,19 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return Appointment.objects.filter(patient__user=self.request.user)
 
     @action(detail=False, methods=['GET'])
-    def upcoming(self):
+    def upcoming(self, request):
         upcoming = self.get_queryset().filter(
             date__gte=timezone.now().date(),
-            status='confirmed'
-        ).order_by('date', 'time')
-        serializer = self.get_serializer(upcoming, many=True)
-        return Response(serializer.data)
+            status__in=['scheduled', 'confirmed']
+        ).select_related('doctor').order_by('date', 'time')
+        return Response(self.get_serializer(upcoming, many=True).data)
+
+    @action(detail=True, methods=['POST'])
+    def cancel(self, request, pk=None):
+        appointment = self.get_object()
+        appointment.status = 'cancelled'
+        appointment.save()
+        return Response({'status': 'appointment cancelled'})
 
 class TestResultViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -75,6 +88,11 @@ class TestResultViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return TestResult.objects.filter(patient__user=self.request.user)
 
+    @action(detail=False, methods=['GET'])
+    def recent(self, request):
+        recent = self.get_queryset().order_by('-date')[:5]
+        return Response(self.get_serializer(recent, many=True).data)
+
 class MedicationViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = MedicationSerializer
@@ -82,4 +100,11 @@ class MedicationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Medication.objects.filter(patient__user=self.request.user)
 
-    
+    @action(detail=False, methods=['GET'])
+    def active(self, request):
+        today = timezone.now().date()
+        active = self.get_queryset().filter(
+            end_date__gte=today,
+            is_active=True
+        ).order_by('name')
+        return Response(self.get_serializer(active, many=True).data)
